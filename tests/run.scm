@@ -225,5 +225,222 @@
              (u8vector 9)
              (byte-blob->blob (byte-blob-drop c 2)))
 
+            ;; comparisons and basic interface
+
+	    (test (sprintf "byte-blob=?") 
+		  #t (byte-blob=? a a))
+
+	    (test (sprintf "byte-blob=?") 
+		  #f (byte-blob=? a b))
+
+	    (test (sprintf "byte-blob=? on slices") 
+		  #t (byte-blob=? (byte-blob-drop (byte-blob-append a b c) 2) (byte-blob-append b c)))
+
+	    (test (sprintf "byte-blob-compare") 
+		  0 (byte-blob-compare a a))
+
+	    (test (sprintf "byte-blob-compare") 
+		  -1 (byte-blob-compare a (byte-blob-append a (byte-blob-singleton 9))))
+
+	    (test (sprintf "byte-blob-compare") 
+		  1 (byte-blob-compare (byte-blob-singleton 2) (byte-blob-singleton 1)))
+
+	    (test (sprintf "byte-blob-singleton") 
+		  '(1) (byte-blob->list (byte-blob-singleton 1)))
+
+	    (test (sprintf "byte-blob-snoc") 
+		  '(1 2 5) (byte-blob->list (byte-blob-snoc a 5)))
+
+	    (test (sprintf "byte-blob-last") 
+		  2 (byte-blob-last a))
+
+	    (test (sprintf "byte-blob-init") 
+		  '(1) (byte-blob->list (byte-blob-init a)))
+
+	    (test (sprintf "byte-blob-uncons") 
+		  '(1 (2)) (let-values (((x r) (byte-blob-uncons a)))
+			     (list x (byte-blob->list r))))
+
+	    (test (sprintf "byte-blob-uncons on empty") 
+		  #f (byte-blob-uncons (byte-blob-empty)))
+
+	    (test (sprintf "byte-blob-unsnoc") 
+		  '((1) 2) (let-values (((r x) (byte-blob-unsnoc a)))
+			     (list (byte-blob->list r) x)))
+
+	    (test (sprintf "byte-blob-unsnoc on empty") 
+		  #f (byte-blob-unsnoc (byte-blob-empty)))
+
+            ;; searching
+
+	    (test (sprintf "byte-blob-index-maybe") 
+		  2 (byte-blob-index-maybe a 1))
+
+	    (test (sprintf "byte-blob-index-maybe out of range") 
+		  #f (byte-blob-index-maybe a 5))
+
+	    (test (sprintf "byte-blob-elem-index") 
+		  1 (byte-blob-elem-index 2 (byte-blob-append a b)))
+
+	    (test (sprintf "byte-blob-elem-index missing") 
+		  #f (byte-blob-elem-index 9 (byte-blob-append a b)))
+
+	    (test (sprintf "byte-blob-elem-index-end") 
+		  3 (byte-blob-elem-index-end 4 (byte-blob-append a b)))
+
+	    (test (sprintf "byte-blob-elem-indices") 
+		  '(0 1) (byte-blob-elem-indices 1 (list->byte-blob '(1 1 2))))
+
+	    (test (sprintf "byte-blob-elem-indices none") 
+		  '() (byte-blob-elem-indices 9 (byte-blob-append a b)))
+
+	    (test (sprintf "byte-blob-find-index") 
+		  1 (byte-blob-find-index (lambda (x) (> x 1)) (byte-blob-append a b)))
+
+	    (test (sprintf "byte-blob-find-index none") 
+		  #f (byte-blob-find-index (lambda (x) (> x 100)) (byte-blob-append a b)))
+
+	    (test (sprintf "byte-blob-find-index-end") 
+		  3 (byte-blob-find-index-end (lambda (x) (> x 1)) (byte-blob-append a b)))
+
+	    (test (sprintf "byte-blob-find-indices") 
+		  '(1 3) (byte-blob-find-indices (lambda (x) (even? x)) (byte-blob-append a b)))
+
+	    (test (sprintf "byte-blob-count") 
+		  2 (byte-blob-count 1 (list->byte-blob '(1 2 1))))
+
+            ;; slicing
+
+	    (test (sprintf "byte-blob-split-at") 
+		  '((1 2) (3 4)) (let-values (((x r) (byte-blob-split-at (byte-blob-append a b) 2)))
+				   (list (byte-blob->list x) (byte-blob->list r))))
+
+	    (test (sprintf "byte-blob-split-at clamping") 
+		  '((1 2) ()) (let-values (((x r) (byte-blob-split-at a 10)))
+				(list (byte-blob->list x) (byte-blob->list r))))
+
+	    (test (sprintf "byte-blob-take-end") 
+		  '(3 4) (byte-blob->list (byte-blob-take-end (byte-blob-append a b) 2)))
+
+	    (test (sprintf "byte-blob-drop-end") 
+		  '(1 2) (byte-blob->list (byte-blob-drop-end (byte-blob-append a b) 2)))
+
+	    (test (sprintf "byte-blob-take-while") 
+		  '(1 2) (byte-blob->list 
+			  (byte-blob-take-while (lambda (x) (< x 3)) (byte-blob-append a b))))
+
+	    (test (sprintf "byte-blob-drop-while") 
+		  '(3 4) (byte-blob->list 
+			  (byte-blob-drop-while (lambda (x) (< x 3)) (byte-blob-append a b))))
+
+	    (test (sprintf "byte-blob-take-while-end") 
+		  '(3 4) (byte-blob->list 
+			  (byte-blob-take-while-end (lambda (x) (> x 2)) (byte-blob-append a b))))
+
+	    (test (sprintf "byte-blob-drop-while-end") 
+		  '(1 2) (byte-blob->list 
+			  (byte-blob-drop-while-end (lambda (x) (> x 2)) (byte-blob-append a b))))
+
+	    (test (sprintf "byte-blob-span-while") 
+		  '((1 2) (3 4)) (let-values (((x r) (byte-blob-span-while 
+							(lambda (x) (< x 3)) (byte-blob-append a b))))
+				   (list (byte-blob->list x) (byte-blob->list r))))
+
+	    (test (sprintf "byte-blob-break-while") 
+		  '((1 2) (3 4)) (let-values (((x r) (byte-blob-break-while 
+							(lambda (x) (> x 2)) (byte-blob-append a b))))
+				   (list (byte-blob->list x) (byte-blob->list r))))
+
+	    (test (sprintf "byte-blob-span-while-end") 
+		  '((1) (2)) (let-values (((x r) (byte-blob-span-while-end 
+						  (lambda (x) (> x 1)) a)))
+			       (list (byte-blob->list x) (byte-blob->list r))))
+
+	    (test (sprintf "byte-blob-break-while-end") 
+		  '((1) (2)) (let-values (((x r) (byte-blob-break-while-end 
+						  (lambda (x) (< x 2)) a)))
+			       (list (byte-blob->list x) (byte-blob->list r))))
+
+	    (test (sprintf "byte-blob-strip-prefix") 
+		  '(2) (byte-blob->list (byte-blob-strip-prefix (byte-blob-singleton 1) a)))
+
+	    (test (sprintf "byte-blob-strip-prefix no match") 
+		  #f (byte-blob-strip-prefix (byte-blob-singleton 9) a))
+
+	    (test (sprintf "byte-blob-strip-suffix") 
+		  '(1) (byte-blob->list (byte-blob-strip-suffix (byte-blob-singleton 2) a)))
+
+	    (test (sprintf "byte-blob-strip-suffix no match") 
+		  #f (byte-blob-strip-suffix (byte-blob-singleton 9) a))
+
+	    (test (sprintf "byte-blob-is-prefix-of?") 
+		  #t (byte-blob-is-prefix-of? a (byte-blob-append a b)))
+
+	    (test (sprintf "byte-blob-is-prefix-of?") 
+		  #f (byte-blob-is-prefix-of? b a))
+
+	    (test (sprintf "byte-blob-is-suffix-of?") 
+		  #t (byte-blob-is-suffix-of? b (byte-blob-append a b)))
+
+	    (test (sprintf "byte-blob-is-suffix-of?") 
+		  #f (byte-blob-is-suffix-of? a b))
+
+            ;; utf8 validation
+
+	    (test (sprintf "byte-blob-valid-utf8? ascii") 
+		  #t (byte-blob-valid-utf8? (string->byte-blob "abc")))
+
+	    (test (sprintf "byte-blob-valid-utf8? empty") 
+		  #t (byte-blob-valid-utf8? (byte-blob-empty)))
+
+	    (test (sprintf "byte-blob-valid-utf8? 2-byte") 
+		  #t (byte-blob-valid-utf8? (list->byte-blob '(194 160))))
+
+	    (test (sprintf "byte-blob-valid-utf8? 3-byte") 
+		  #t (byte-blob-valid-utf8? (list->byte-blob '(224 160 128))))
+
+	    (test (sprintf "byte-blob-valid-utf8? 4-byte max") 
+		  #t (byte-blob-valid-utf8? (list->byte-blob '(244 143 191 191))))
+
+	    (test (sprintf "byte-blob-valid-utf8? bad lead") 
+		  #f (byte-blob-valid-utf8? (list->byte-blob '(128))))
+
+	    (test (sprintf "byte-blob-valid-utf8? truncated") 
+		  #f (byte-blob-valid-utf8? (list->byte-blob '(194))))
+
+	    (test (sprintf "byte-blob-valid-utf8? bad continuation") 
+		  #f (byte-blob-valid-utf8? (list->byte-blob '(224 32 128))))
+
+	    (test (sprintf "byte-blob-valid-utf8? above U+10FFFF") 
+		  #f (byte-blob-valid-utf8? (list->byte-blob '(244 165 165 165))))
+
+	    (test (sprintf "byte-blob-valid-utf8? invalid lead 245") 
+		  #f (byte-blob-valid-utf8? (list->byte-blob '(245 160 160 160))))
+
+	    (test (sprintf "byte-blob-valid-utf8? surrogate") 
+		  #f (byte-blob-valid-utf8? (list->byte-blob '(237 160 128))))
+
+	    (test (sprintf "byte-blob-valid-utf8? just below surrogate") 
+		  #t (byte-blob-valid-utf8? (list->byte-blob '(236 160 128))))
+
+            ;; file output
+
+            (let* ((temp-path (create-temporary-file "byte-blob-test-write")))
+              (byte-blob->file temp-path (byte-blob-append a b))
+              (test 
+               (sprintf "byte-blob->file")
+               '(1 2 3 4) 
+               (byte-blob->list
+                (file->byte-blob temp-path)))
+
+              (byte-blob->file temp-path (byte-blob-append a b) #:append)
+              (test 
+               (sprintf "byte-blob->file append mode")
+               '(1 2 3 4 1 2 3 4) 
+               (byte-blob->list
+                (file->byte-blob temp-path)))
+
+              (delete-file temp-path))
+
 (test-end)
 (test-exit)

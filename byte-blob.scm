@@ -51,6 +51,43 @@
 	 byte-blob-read
 	 byte-blob-write
 
+	 byte-blob=?
+	 byte-blob-compare
+	 byte-blob-singleton
+	 byte-blob-snoc
+	 byte-blob-last
+	 byte-blob-init
+	 byte-blob-uncons
+	 byte-blob-unsnoc
+
+	 byte-blob-index-maybe
+	 byte-blob-elem-index
+	 byte-blob-elem-index-end
+	 byte-blob-elem-indices
+	 byte-blob-find-index
+	 byte-blob-find-index-end
+	 byte-blob-find-indices
+	 byte-blob-count
+
+	 byte-blob-split-at
+	 byte-blob-take-end
+	 byte-blob-drop-end
+	 byte-blob-take-while
+	 byte-blob-drop-while
+	 byte-blob-take-while-end
+	 byte-blob-drop-while-end
+	 byte-blob-span-while
+	 byte-blob-break-while
+	 byte-blob-span-while-end
+	 byte-blob-break-while-end
+	 byte-blob-strip-prefix
+	 byte-blob-strip-suffix
+	 byte-blob-is-prefix-of?
+	 byte-blob-is-suffix-of?
+
+	 byte-blob->file
+	 byte-blob-valid-utf8?
+
 	 u8vector->byte-blob  
 	 s8vector->byte-blob  
 	 u16vector->byte-blob 
@@ -71,7 +108,8 @@
 	 )
 
 	(import scheme (chicken base) (chicken foreign) (chicken blob)
-                (chicken file posix) (chicken memory) chicken.internal srfi-1)
+                (chicken file posix) (chicken memory) (chicken fixnum)
+                chicken.internal srfi-1)
 
 
 
@@ -225,6 +263,47 @@ END
     (assert (positive? n))
     (byte-blob-copy b (+ 1 (byte-blob-offset b)) (- n 1))))
 
+
+;; Content-based comparison of the byte ranges of two byte-blobs,
+;; using memcmp over the overlapping prefix of the slices.
+
+(define blob-compare-bytes
+    (foreign-lambda* int ((nonnull-blob b1) (integer off1) (nonnull-blob b2) (integer off2) (integer n))
+#<<END
+   C_return (memcmp ((const void *)(b1+off1), (const void *)(b2+off2), n));
+END
+))
+
+;; /O(n)/ Lexicographic comparison of two byte-blobs. Returns -1, 0, or
+;; +1 as the first argument is less than, equal to, or greater than the
+;; second.
+
+(define (byte-blob-compare a b)
+  (let* ((alen (byte-blob-length a))
+	 (blen (byte-blob-length b))
+	 (n    (min alen blen)))
+    (cond ((zero? n)  (cond ((< alen blen) -1)
+			    ((> alen blen) 1)
+			    (else 0)))
+	  (else
+	     (let ((r (blob-compare-bytes (byte-blob-object a) (byte-blob-offset a)
+					  (byte-blob-object b) (byte-blob-offset b) n)))
+	       (cond ((not (zero? r)) (if (negative? r) -1 1))
+		     ((< alen blen)   -1)
+		     ((> alen blen)   1)
+		     (else            0)))))))
+
+;; /O(n)/ Returns #t if the two byte-blobs contain the same sequence of
+;; bytes, and #f otherwise.
+
+(define (byte-blob=? a b)
+  (zero? (byte-blob-compare a b)))
+
+(define (byte-blob-singleton v)
+  (let ((ob (make-blob 1)))
+    (blob-set! ob 0 v)
+    (make-byte-blob ob 0 1)))
+
 (define (byte-blob-append a . rst)
   (if (null? rst) a
       (let* ((rlen  (map byte-blob-length (cons a rst)))
@@ -238,8 +317,49 @@ END
 		(loop (+ pos xlen) (cdr lst) (cdr len)))))
 	)))
 
-    
 
+;; 'byte-blob-snoc' appends a byte to the end of a byte-blob; like
+;; byte-blob-cons, it requires a memcpy.
+
+(define (byte-blob-snoc b x)
+  (let* ((blen  (byte-blob-length b))
+	 (b1len (+ 1 blen))
+	 (b1    (make-blob b1len)))
+    (if (positive? blen) 
+	(move-memory! (byte-blob-object b) b1 blen (byte-blob-offset b) 0))
+    (blob-set! b1 blen x)
+    (make-byte-blob b1 0 b1len)))
+
+;; Returns the last byte of a non-empty byte-blob; raises an error on
+;; an empty byte-blob.
+
+(define (byte-blob-last b)
+  (assert (positive? (byte-blob-length b)))
+  (blob-car (byte-blob-object b) (+ (byte-blob-offset b) (- (byte-blob-length b) 1))))
+
+;; Returns a byte-blob containing all but the last byte of b; the
+;; result is undefined if b is empty.
+
+(define (byte-blob-init b)
+  (let ((n (byte-blob-length b)))
+    (assert (positive? n))
+    (byte-blob-copy b (byte-blob-offset b) (- n 1))))
+
+;; Returns two values, the first byte and the remainder of a non-empty
+;; byte-blob, or #f if the byte-blob is empty.
+
+(define (byte-blob-uncons b)
+  (if (byte-blob-empty? b) #f
+      (values (byte-blob-car b) (byte-blob-cdr b))))
+
+;; Returns two values, all but the last byte and the last byte of a
+;; non-empty byte-blob, or #f if the byte-blob is empty.
+
+(define (byte-blob-unsnoc b)
+  (if (byte-blob-empty? b) #f
+      (values (byte-blob-init b) (byte-blob-last b))))
+
+    
 (define blob-reverse 
     (foreign-lambda* void ((nonnull-blob b) (nonnull-blob b1) (integer offset) (integer size))
 #<<END
@@ -308,6 +428,128 @@ END
   (byte-blob-take (byte-blob-drop b start) (- end start)))
 
 
+;; /O(n)/ Returns two values, the prefix of b of length n (or all of b
+;; if n is greater than the length of b) and the remainder, as
+;; byte-blobs.
+
+(define (byte-blob-split-at b n)
+  (values (byte-blob-take b n)
+	  (if (< (byte-blob-length b) n) (byte-blob-empty) (byte-blob-drop b n))))
+
+;; /O(n)/ Returns the suffix of b of length n, or all of b if n is
+;; greater than the length of b.
+
+(define (byte-blob-take-end b n)
+  (let ((blen (byte-blob-length b)))
+    (if (< blen n) b
+	(byte-blob-copy b (+ (- blen n) (byte-blob-offset b)) n))))
+
+;; /O(n)/ Returns b with its last n bytes removed, or the empty
+;; byte-blob if n is greater than the length of b.
+
+(define (byte-blob-drop-end b n)
+  (let ((blen (byte-blob-length b)))
+    (if (< blen n) (byte-blob-empty)
+	(byte-blob-copy b (byte-blob-offset b) (- blen n)))))
+
+
+;; /O(n)/ Returns the longest prefix of b whose bytes all satisfy the
+;; predicate f.
+
+(define (byte-blob-take-while f b)
+  (let* ((blen  (byte-blob-length b))
+	 (ob    (byte-blob-object b)))
+    (let loop ((i 0) (p (byte-blob-offset b)))
+      (cond ((fx>= i blen) (byte-blob-copy b (byte-blob-offset b) blen))
+	    ((f (blob-uref ob p)) (loop (+ 1 i) (+ 1 p)))
+	    (else (byte-blob-copy b (byte-blob-offset b) i))))))
+
+;; /O(n)/ Returns b with the longest prefix whose bytes all satisfy the
+;; predicate f removed.
+
+(define (byte-blob-drop-while f b)
+  (let* ((blen  (byte-blob-length b))
+	 (ob    (byte-blob-object b)))
+    (let loop ((i 0) (p (byte-blob-offset b)))
+      (cond ((fx>= i blen) (byte-blob-empty))
+	    ((f (blob-uref ob p)) (loop (+ 1 i) (+ 1 p)))
+	    (else (byte-blob-copy b (+ i (byte-blob-offset b)) (- blen i)))))))
+
+;; /O(n)/ Returns the longest suffix of b whose bytes all satisfy the
+;; predicate f.
+
+(define (byte-blob-take-while-end f b)
+  (byte-blob-reverse (byte-blob-take-while f (byte-blob-reverse b))))
+
+;; /O(n)/ Returns b with its longest suffix whose bytes all satisfy the
+;; predicate f removed.
+
+(define (byte-blob-drop-while-end f b)
+  (byte-blob-reverse (byte-blob-drop-while f (byte-blob-reverse b))))
+
+;; /O(n)/ Returns two values, the longest prefix of b whose bytes all
+;; satisfy the predicate f, and the remainder.
+
+(define (byte-blob-span-while f b)
+  (let ((pre (byte-blob-take-while f b)))
+    (values pre (byte-blob-drop b (byte-blob-length pre)))))
+
+;; /O(n)/ Returns two values, the longest prefix of b whose bytes all
+;; fail the predicate f, and the remainder.
+
+(define (byte-blob-break-while f b)
+  (byte-blob-span-while (lambda (x) (not (f x))) b))
+
+;; /O(n)/ Returns two values, the longest suffix of b whose bytes all
+;; satisfy the predicate f, and the rest.
+
+(define (byte-blob-span-while-end f b)
+  (let ((pre (byte-blob-take-while-end f b)))
+    (values (byte-blob-drop-end b (byte-blob-length pre)) pre)))
+
+;; /O(n)/ Returns two values, the longest suffix of b whose bytes all
+;; fail the predicate f, and the rest.
+
+(define (byte-blob-break-while-end f b)
+  (byte-blob-span-while-end (lambda (x) (not (f x))) b))
+
+
+;; /O(n)/ Returns the remainder of b without its first n bytes, if the
+;; first n bytes of b match prefix, or #f otherwise.
+
+(define (byte-blob-strip-prefix prefix b)
+  (let ((n (byte-blob-length prefix)))
+    (if (and (<= n (byte-blob-length b))
+	     (zero? (blob-compare-bytes
+		     (byte-blob-object prefix) (byte-blob-offset prefix)
+		     (byte-blob-object b) (byte-blob-offset b) n)))
+	(byte-blob-copy b (+ n (byte-blob-offset b)) (- (byte-blob-length b) n))
+	#f)))
+
+;; /O(n)/ Returns the prefix of b without its last n bytes, if its last
+;; n bytes match suffix, or #f otherwise.
+
+(define (byte-blob-strip-suffix suffix b)
+  (let ((n (byte-blob-length suffix)))
+    (if (and (<= n (byte-blob-length b))
+	     (zero? (blob-compare-bytes
+		     (byte-blob-object suffix) (byte-blob-offset suffix)
+		     (byte-blob-object b)
+		     (+ (- (byte-blob-length b) n) (byte-blob-offset b)) n)))
+	(byte-blob-copy b (byte-blob-offset b) (- (byte-blob-length b) n))
+	#f)))
+
+;; /O(n)/ Returns #t if prefix is a prefix of b, and #f otherwise.
+
+(define (byte-blob-is-prefix-of? prefix b)
+  (and (byte-blob-strip-prefix prefix b) #t))
+
+;; /O(n)/ Returns #t if suffix is a suffix of b, and #f otherwise.
+
+(define (byte-blob-is-suffix-of? suffix b)
+  (and (byte-blob-strip-suffix suffix b) #t))
+
+
 (define (byte-blob-map f b)
   (let* ((blen  (byte-blob-length b))
 	 (ob    (byte-blob-object b))
@@ -338,6 +580,91 @@ END
       (if (positive? i) 
 	  (loop (- i 1) (+ 1 p) (f (blob-ref ob p) ax))
 	  ax))))
+    
+;;
+;; Searching by equality and by predicate. All procedures in this
+;; section index into the underlying blob with blob-uref, so the byte
+;; values are interpreted as unsigned octets.
+;;
+
+;; Returns the value of the byte at index i, or #f if i is out of
+;; range.
+
+(define (byte-blob-index-maybe b i)
+  (let ((blen (byte-blob-length b)))
+    (and (or (zero? i) (positive? i)) (< i blen)
+	 (blob-uref (byte-blob-object b) (+ i (byte-blob-offset b))))))
+
+;; /O(n)/ Returns the index of the first occurrence of byte c in b, or
+;; #f if b does not contain c.
+
+(define (byte-blob-elem-index c b)
+  (let ((blen (byte-blob-length b))
+	(ob   (byte-blob-object b)))
+    (let loop ((i 0) (p (byte-blob-offset b)))
+      (cond ((fx>= i blen) #f)
+	    ((fx= (blob-uref ob p) c) i)
+	    (else (loop (+ 1 i) (+ 1 p)))))))
+
+;; /O(n)/ Returns the index of the last occurrence of byte c in b, or
+;; #f if b does not contain c.
+
+(define (byte-blob-elem-index-end c b)
+  (let ((blen (byte-blob-length b))
+	(ob   (byte-blob-object b)))
+    (let loop ((i (- blen 1)) (p (+ (- blen 1) (byte-blob-offset b))))
+      (cond ((negative? i) #f)
+	    ((fx= (blob-uref ob p) c) i)
+	    (else (loop (- i 1) (- p 1)))))))
+
+;; /O(n)/ Returns a list of the indices of all occurrences of byte c
+;; in b, in increasing order.
+
+(define (byte-blob-elem-indices c b)
+  (let ((blen (byte-blob-length b))
+	(ob   (byte-blob-object b)))
+    (let loop ((i 0) (p (byte-blob-offset b)) (ax '()))
+      (cond ((fx>= i blen) (reverse ax))
+	    ((fx= (blob-uref ob p) c) (loop (+ 1 i) (+ 1 p) (cons i ax)))
+	    (else (loop (+ 1 i) (+ 1 p) ax))))))
+
+;; /O(n)/ Returns the index of the first byte in b that satisfies the
+;; predicate f, or #f if no byte does.
+
+(define (byte-blob-find-index f b)
+  (let ((blen (byte-blob-length b))
+	(ob   (byte-blob-object b)))
+    (let loop ((i 0) (p (byte-blob-offset b)))
+      (cond ((fx>= i blen) #f)
+	    ((f (blob-uref ob p)) i)
+	    (else (loop (+ 1 i) (+ 1 p)))))))
+
+;; /O(n)/ Returns the index of the last byte in b that satisfies the
+;; predicate f, or #f if no byte does.
+
+(define (byte-blob-find-index-end f b)
+  (let ((blen (byte-blob-length b))
+	(ob   (byte-blob-object b)))
+    (let loop ((i (- blen 1)) (p (+ (- blen 1) (byte-blob-offset b))))
+      (cond ((negative? i) #f)
+	    ((f (blob-uref ob p)) i)
+	    (else (loop (- i 1) (- p 1)))))))
+
+;; /O(n)/ Returns a list of the indices of all bytes in b that satisfy
+;; the predicate f, in increasing order.
+
+(define (byte-blob-find-indices f b)
+  (let ((blen (byte-blob-length b))
+	(ob   (byte-blob-object b)))
+    (let loop ((i 0) (p (byte-blob-offset b)) (ax '()))
+      (cond ((fx>= i blen) (reverse ax))
+	    ((f (blob-uref ob p)) (loop (+ 1 i) (+ 1 p) (cons i ax)))
+	    (else (loop (+ 1 i) (+ 1 p) ax))))))
+
+;; /O(n)/ Returns the number of occurrences of byte c in b.
+
+(define (byte-blob-count c b)
+  (length (byte-blob-elem-indices c b)))
     
 	
 (define (byte-blob->list b . rest)
@@ -453,6 +780,69 @@ END
 	(offset (byte-blob-offset b)))
     (blob-write (port->fileno port) ob n offset)
     (blob-check-error! 'byte-blob-write)))
+
+
+;; Writes the byte-blob b to the file named by filename. The optional
+;; mode argument is passed to call-with-output-file, so #:append can
+;; be used to append to an existing file. Raises an error if any write
+;; fails.
+
+(define (byte-blob->file filename b #!optional mode)
+  (if mode
+      (call-with-output-file filename
+	(lambda (port) (byte-blob-write port b)) mode)
+      (call-with-output-file filename
+	(lambda (port) (byte-blob-write port b)))))
+
+
+;;
+;; /O(n)/ UTF-8 validation, using a direct range-check state machine:
+;; lead bytes are classified by the number of continuation bytes they
+;; require; the first continuation byte of the sequences for lead byte
+;; 0xED (surrogates) and 0xF4 (values above U+10FFFF) is range-limited.
+;;
+
+(define (byte-blob-continuation-byte? c)
+  (fx= 128 (fxand c 192)))
+
+;; Returns the number of continuation bytes required by the lead byte
+;; code, or -1 if code is not a valid lead byte.
+
+(define (byte-blob-utf8-remaining code)
+  (cond ((fx< code 128)  0)
+	((fx< code 194)  -1)
+	((fx< code 224)  1)
+	((fx< code 240)  2)
+	((fx< code 245)  3)
+	(else -1)))
+
+;; Returns the lower and upper bounds (both inclusive) for the first
+;; continuation byte of the multi-byte sequence whose lead byte is
+;; code and which has rem continuation bytes remaining.
+
+(define (byte-blob-utf8-first-continuation-bounds code rem)
+  (cond ((fx= code 237) (values 128 159)) ; exclude surrogates U+D800..U+DFFF
+	((fx= code 244) (values 128 143)) ; exclude values above U+10FFFF
+	(else (values 128 191))))
+
+(define (byte-blob-valid-utf8? b)
+  (let ((blen (byte-blob-length b))
+	(ob   (byte-blob-object b)))
+    (let loop ((i 0) (rem 0) (bad #f) (lo 0) (hi 191))
+      (cond ((fx>= i blen) (not (or bad (positive? rem))))
+	    ((fx>= rem 1)
+	     (let ((c (blob-uref ob (+ i (byte-blob-offset b)))))
+	       (cond ((not (byte-blob-continuation-byte? c)) (loop blen 0 #t 0 191))
+		     ((or (fx< c lo) (fx> c hi)) (loop blen 0 #t 0 191))
+		     (else (loop (+ 1 i) (- rem 1) bad 0 191)))))
+	    (else
+	     (let* ((c (blob-uref ob (+ i (byte-blob-offset b))))
+		    (r (byte-blob-utf8-remaining c)))
+	       (cond ((negative? r) (loop blen 0 #t 0 191))
+		     ((zero? r) (loop (+ 1 i) 0 bad 0 191))
+		     (else
+		      (let-values (((lo2 hi2) (byte-blob-utf8-first-continuation-bounds c r)))
+			(loop (+ 1 i) r bad lo2 hi2))))))))))
 
 
 ;; code adapted from srfi-4.scm:
