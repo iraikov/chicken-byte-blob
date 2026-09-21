@@ -1,7 +1,7 @@
 ;;
 ;;  Utility procedures for manipulating blobs as byte sequences.
 ;;
-;;   Copyright 2009-2020 Ivan Raikov, Dan Thedens.
+;;   Copyright 2009-2026 Ivan Raikov, Dan Thedens.
 ;;
 ;;   This program is free software: you can redistribute it and/or
 ;;   modify it under the terms of the GNU General Public License as
@@ -71,7 +71,7 @@
 	 )
 
 	(import scheme (chicken base) (chicken foreign) (chicken blob)
-                (chicken file posix) (chicken memory) srfi-1)
+                (chicken file posix) (chicken memory) chicken.internal srfi-1)
 
 
 
@@ -109,13 +109,6 @@
 	       (or (positive? length) (zero? length))
 	       (>= (- (blob-size (byte-blob-object b)) offset) length)))
   (make-byte-blob (byte-blob-object b) offset length ))
-
-(define blob-set! 
-    (foreign-lambda* void ((nonnull-blob b) (integer offset) (byte value))
-#<<END
-   b[offset] = value;
-END
-))
 
 (define (byte-blob-set! b i v)
   (let ((ob (byte-blob-object b))
@@ -354,9 +347,6 @@ END
 	   (else  (loop (byte-blob-cdr b) (cons (fmap (byte-blob-car b)) ax)))))))
 	 
 (define (byte-blob->string b)
-  (blob->string (byte-blob-object b)))
-
-(define (byte-blob->string b)
   (assert (byte-blob? b))
   (let* ([n (byte-blob-length b)]
 	 [s (make-string n)] )
@@ -364,52 +354,41 @@ END
     s))
 
 
-;; The following three functions are borrowed from the
-;; Chicken-specific parts of SWIG
+;; Error handling: the C routines below never raise Scheme exceptions
+;; themselves. Instead, they record an error condition in static
+;; variables, and the Scheme wrappers check the flag after each foreign
+;; call and raise a proper Scheme exception if an error is pending.
+
 #>
-static void chicken_Panic (C_char *) C_noret;
-static void chicken_Panic (C_char *msg)
+
+#include <unistd.h>
+
+static int blob_error_pending = 0;
+static char blob_error_msg[256];
+
+static void blob_set_error (const char *msg)
 {
-  C_word *a = C_alloc (C_SIZEOF_STRING (strlen (msg)));
-  C_word scmmsg = C_string2 (&a, msg);
-  C_halt (scmmsg);
-  exit (5); /* should never get here */
-}
-
-static void chicken_ThrowException(C_word value) C_noret;
-static void chicken_ThrowException(C_word value)
-{
-  char *aborthook = C_text("\003sysabort");
-
-  C_word *a = C_alloc(C_SIZEOF_STRING(strlen(aborthook)));
-  C_word abort = C_intern2(&a, aborthook);
-
-  abort = C_block_item(abort, 0);
-  if (C_immediatep(abort))
-    chicken_Panic(C_text("`##sys#abort' is not defined"));
-
-#if defined(C_BINARY_VERSION) && (C_BINARY_VERSION >= 8)
-  C_word rval[3] = { abort, C_SCHEME_UNDEFINED, value };
-  C_do_apply(3, rval);
-#else
-  C_save(value);
-  C_do_apply(1, abort, C_SCHEME_UNDEFINED);
-#endif
-}
-
-void chicken_io_exception (int code, int msglen, const char *msg) 
-{
-  C_word *a;
-  C_word scmmsg;
-  C_word list;
-
-  a = C_alloc (C_SIZEOF_STRING (msglen) + C_SIZEOF_LIST(2));
-  scmmsg = C_string2 (&a, (char *) msg);
-  list = C_list(&a, 2, C_fix(code), scmmsg);
-  chicken_ThrowException(list);
+  blob_error_pending = 1;
+  strncpy(blob_error_msg, msg, 255);
+  blob_error_msg[255] = 0;
 }
 
 <#
+
+(define blob-error-pending?
+  (foreign-lambda* bool () "C_return(blob_error_pending);"))
+
+(define blob-error-message
+  (foreign-lambda* c-string () "C_return(blob_error_msg);"))
+
+(define blob-clear-error!
+  (foreign-lambda* void () "blob_error_pending = 0;"))
+
+(define (blob-check-error! loc)
+  (when (blob-error-pending?)
+    (let ((msg (blob-error-message)))
+      (blob-clear-error!)
+      (error loc msg))))
 
 
 
@@ -420,7 +399,8 @@ void chicken_io_exception (int code, int msglen, const char *msg)
 
      if ( (s = read(fd,b,n)) == -1 )
      {
-          chicken_io_exception (-1,32,"read I/O error in byte-blob-read");
+          blob_set_error("read I/O error in byte-blob-read");
+          C_return(-1);
      }
      C_return(s);
 END
@@ -430,6 +410,7 @@ END
 (define (byte-blob-read port n)
   (let ((ob (make-blob n)))
     (let ((s (blob-read (port->fileno port) ob n)))
+      (blob-check-error! 'byte-blob-read)
       (if (positive? s)
 	  (make-byte-blob ob 0 s)
 	  #!eof))))
@@ -457,8 +438,8 @@ END
      {
 	  if ( (s = write(fd,(const void *)(b+n+offset),size-n)) == -1 )
 	  {
-	       chicken_io_exception (-1,32,"write I/O error in byte-blob-write");
-	       return -1;
+	       blob_set_error("write I/O error in byte-blob-write");
+	       C_return(C_SCHEME_UNDEFINED);
 	  }
 	  n += s;
      }
@@ -470,20 +451,28 @@ END
   (let ((ob (byte-blob-object b))
 	(n  (byte-blob-length b))
 	(offset (byte-blob-offset b)))
-    (blob-write (port->fileno port) ob n offset)))
+    (blob-write (port->fileno port) ob n offset)
+    (blob-check-error! 'byte-blob-write)))
 
 
-;; code borrowed from srfi-4.scm:
+;; code adapted from srfi-4.scm:
+;;
+;; In CHICKEN 6, u8vectors are represented directly as bytevectors,
+;; whereas the other typed vectors are structures that wrap a
+;; bytevector in their second slot.
 
 (define (pack-copy tag loc)
   (lambda (v)
-    (##sys#check-structure v tag loc)
-    (let* ((old (##sys#slot v 1))
-	   (n   (##sys#size old))
-	   (new (##sys#make-blob n)))
-      (move-memory! old new)
-      (make-byte-blob new 0 n)
-      )))
+    (cond ((eq? tag 'u8vector)
+	   (##sys#check-blob v loc)
+	   (make-byte-blob v 0 (##sys#size v)))
+	  (else
+	   (##sys#check-structure v tag loc)
+	   (let* ((old (##sys#slot v 1))
+		  (n   (##sys#size old))
+		  (new (##sys#make-bytevector n)))
+	     (move-memory! old new)
+	     (make-byte-blob new 0 n))))))
 
 (define u8vector->byte-blob (pack-copy 'u8vector 'u8vector->byte-blob))
 (define s8vector->byte-blob (pack-copy 's8vector 's8vector->byte-blob))
@@ -499,16 +488,25 @@ END
   (lambda (bb)
     (let ((str (byte-blob-object bb))
 	  (offset (byte-blob-offset bb)))
-      (##sys#check-byte-vector str loc)
-      (let* ((len (byte-blob-length bb))
-	     (new (##sys#make-blob len)))
-	(if (or (eq? #t sz)
-		(eq? 0 (##core#inline "C_fixnum_modulo" len sz)))
-	    (begin
-	      (move-memory! str new len offset) 
-	      (##sys#make-structure
-	       tag new))
-	    (##sys#error loc "blob does not have correct size for packing" tag len sz) ) ) ) ))
+      (cond ((eq? tag 'u8vector)
+	     (##sys#check-blob str loc)
+	     (let ((len (byte-blob-length bb)))
+	       (if (or (zero? offset)
+		       (= len (##sys#size str)))
+		   str
+		   (let ((new (##sys#make-bytevector len)))
+		     (move-memory! str new len offset 0)
+		     new))))
+	    (else
+	     (##sys#check-blob str loc)
+	     (let* ((len (byte-blob-length bb))
+		    (new (##sys#make-bytevector len)))
+	       (if (or (eq? #t sz)
+		       (eq? 0 (##core#inline "C_fixnum_modulo" len sz)))
+		   (begin
+		     (move-memory! str new len offset) 
+		     (##sys#make-structure tag new))
+		   (##sys#error loc "blob does not have correct size for packing" tag len sz) )))))))
 
 
 (define byte-blob->u8vector (unpack-copy 'u8vector #t 'byte-blob->u8vector))

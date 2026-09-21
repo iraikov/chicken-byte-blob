@@ -1,9 +1,0 @@
-;; -*- scheme -*-
-(repo git "git://github.com/iraikov/chicken-byte-blob.git")
-(uri targz "https://github.com/iraikov/chicken-byte-blob/tarball/{egg-release}")
-(uri files-list "http://code.call-cc.org/files-list?egg={egg-name};release={egg-release}" old-uri)
-
-(release "2.3")
-(release "2.2")
-(release "2.1")
-(release "2.0")

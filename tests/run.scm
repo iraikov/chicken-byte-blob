@@ -9,7 +9,7 @@
    
 
 
-(test-group "byte-blob test"
+(test-begin "byte-blob test")
 
             (test (sprintf "string <-> byte-blob")
 		  "est"
@@ -178,12 +178,8 @@
 		      (byte-blob-cons 
 		       5 (byte-blob-reverse (byte-blob-append a b)))) 9)))
 
-	    (let* ((out-port+path
-		    (let-values (((fd temp-path) (file-mkstemp "/tmp/byte-blob-test.XXXXXX")))
-				(let ((temp-port (open-output-file temp-path #:binary)))
-				  (cons temp-port temp-path))))
-		   (out-port (car out-port+path))
-		   (temp-path (cdr out-port+path)))
+	    (let* ((temp-path (create-temporary-file "byte-blob-test"))
+		   (out-port (open-output-file temp-path #:binary)))
 
 	      (test-assert
 	       (sprintf "byte-blob-write" ) 
@@ -226,9 +222,8 @@
             ;; Test for byte-blob->blob for non-zero offset
             (test
              (sprintf "byte-blob->blob for non-zero offset")
-             #${09}
+             (u8vector 9)
              (byte-blob->blob (byte-blob-drop c 2)))
-)
 
-	    
+(test-end)
 (test-exit)
