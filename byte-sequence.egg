@@ -1,11 +1,10 @@
 ;; -*- Scheme -*-
 
-((synopsis "Byte array utility procedures for byte blobs.")
+((synopsis "Byte array utility procedures for byte sequences.")
  (license "LGPL-3")
  (category data)
  (dependencies srfi-1)
  (test-dependencies test srfi-4)
  (author "Ivan Raikov")
- (components (extension byte-blob))
+ (components (extension byte-sequence))
  )
-
